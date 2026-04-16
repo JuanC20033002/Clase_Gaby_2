@@ -285,4 +285,207 @@ def base_layout(title=""):
         paper_bgcolor=CHART_SURF,
         plot_bgcolor=CHART_SURF,
         font=dict(family="Satoshi, sans-serif", color=TEXT_COLOR, size=12),
-        xaxis=dict(gridcolor=GRID_COLOR, linecolor=GRID_COLOR, zerolin
+        xaxis=dict(gridcolor=GRID_COLOR, linecolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
+        yaxis=dict(gridcolor=GRID_COLOR, linecolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
+        margin=dict(l=10, r=10, t=40, b=10),
+        hovermode="x unified",
+    )
+
+# ─── Comparativa: Precio + Histograma ────────────────────────────────────────
+st.markdown('<p class="section-header">📈 Comparativa: Precio vs. Distribución de Retornos</p>',
+            unsafe_allow_html=True)
+
+fig_comp = make_subplots(
+    rows=1, cols=2,
+    column_widths=[0.62, 0.38],
+    subplot_titles=["Precio de Cierre", f"Distribución de Retornos Diarios (VaR {confidence_label})"],
+)
+
+fig_comp.add_trace(
+    go.Scatter(x=prices.index, y=prices.values,
+               mode="lines", name="Precio",
+               line=dict(color=accent_color, width=1.8),
+               fill="tozeroy",
+               fillcolor=f"rgba({int(accent_color[1:3],16)},{int(accent_color[3:5],16)},{int(accent_color[5:7],16)},0.08)"),
+    row=1, col=1)
+
+ret_vals  = returns.values
+bin_count = min(80, max(40, len(ret_vals) // 10))
+fig_comp.add_trace(
+    go.Histogram(x=ret_vals, nbinsx=bin_count,
+                 name="Retornos", marker_color=accent_color, opacity=0.7),
+    row=1, col=2)
+
+x_range  = np.linspace(ret_vals.min(), ret_vals.max(), 300)
+pdf_vals = stats.norm.pdf(x_range, ret_vals.mean(), ret_vals.std())
+scale    = len(ret_vals) * (ret_vals.max() - ret_vals.min()) / bin_count
+fig_comp.add_trace(
+    go.Scatter(x=x_range, y=pdf_vals * scale,
+               mode="lines", name="Dist. Normal",
+               line=dict(color="#e8af34", width=2, dash="dot")),
+    row=1, col=2)
+
+var_val = returns.mean() - stats.norm.ppf(confidence) * returns.std()
+fig_comp.add_vline(x=var_val, line_width=2, line_dash="dash",
+                   line_color="#ef4444",
+                   annotation_text=f"VaR {confidence_label}",
+                   annotation_font_color="#ef4444",
+                   row=1, col=2)
+
+layout = base_layout()
+layout.update(height=380, showlegend=False,
+              paper_bgcolor=CHART_SURF, plot_bgcolor=CHART_SURF)
+fig_comp.update_layout(**layout)
+fig_comp.update_xaxes(gridcolor=GRID_COLOR, linecolor=GRID_COLOR)
+fig_comp.update_yaxes(gridcolor=GRID_COLOR, linecolor=GRID_COLOR)
+st.plotly_chart(fig_comp, use_container_width=True)
+
+# ─── Drawdown ─────────────────────────────────────────────────────────────────
+st.markdown('<p class="section-header">📉 Drawdown Histórico</p>', unsafe_allow_html=True)
+
+roll_max        = prices.cummax()
+drawdown_series = (prices - roll_max) / roll_max * 100
+
+fig_dd = go.Figure()
+fig_dd.add_trace(go.Scatter(
+    x=drawdown_series.index, y=drawdown_series.values,
+    mode="lines", name="Drawdown",
+    line=dict(color="#ef4444", width=1.5),
+    fill="tozeroy", fillcolor="rgba(239,68,68,0.12)"
+))
+fig_dd.add_hline(y=mdd * 100, line_dash="dash",
+                 line_color="#f87171", line_width=1.5,
+                 annotation_text=f"Máx. Drawdown: {mdd*100:.2f}%",
+                 annotation_font_color="#f87171",
+                 annotation_position="bottom right")
+dd_layout = base_layout("Drawdown (%)")
+dd_layout.update(height=280, showlegend=False)
+fig_dd.update_layout(**dd_layout)
+st.plotly_chart(fig_dd, use_container_width=True)
+
+# ─── Volatilidad Rodante + VaR por nivel ─────────────────────────────────────
+col_left, col_right = st.columns(2)
+
+with col_left:
+    st.markdown('<p class="section-header">🌡️ Volatilidad Rodante (30d)</p>',
+                unsafe_allow_html=True)
+    roll_vol = returns.rolling(30).std() * np.sqrt(252) * 100
+    fig_rv = go.Figure()
+    fig_rv.add_trace(go.Scatter(
+        x=roll_vol.index, y=roll_vol.values,
+        mode="lines", name="Vol 30d",
+        line=dict(color="#a86fdf", width=1.8),
+        fill="tozeroy", fillcolor="rgba(168,111,223,0.10)"
+    ))
+    fig_rv.add_hline(y=vol * 100, line_dash="dot",
+                     line_color="#facc15", line_width=1.5,
+                     annotation_text=f"Promedio: {vol*100:.2f}%",
+                     annotation_font_color="#facc15")
+    rv_layout = base_layout("Volatilidad Anualizada Rodante (%)")
+    rv_layout.update(height=280, showlegend=False)
+    fig_rv.update_layout(**rv_layout)
+    st.plotly_chart(fig_rv, use_container_width=True)
+
+with col_right:
+    st.markdown('<p class="section-header">📊 VaR por Nivel de Confianza</p>',
+                unsafe_allow_html=True)
+    confidence_levels = [0.80, 0.85, 0.90, 0.95, 0.99]
+    var_values  = [var_parametric(returns, c) * 100 for c in confidence_levels]
+    colors_bar  = ["#4f98a3" if v < var_threshold * 100 else "#ef4444" for v in var_values]
+
+    fig_var = go.Figure(go.Bar(
+        x=[f"{int(c*100)}%" for c in confidence_levels],
+        y=var_values,
+        marker_color=colors_bar,
+        text=[f"{v:.2f}%" for v in var_values],
+        textposition="outside",
+        textfont=dict(color="#e8e8ea", size=11)
+    ))
+    fig_var.add_hline(y=var_threshold * 100, line_dash="dash",
+                      line_color="#facc15", line_width=1.5,
+                      annotation_text=f"Umbral {var_threshold*100:.1f}%",
+                      annotation_font_color="#facc15")
+    var_layout = base_layout("VaR Paramétrico por Nivel de Confianza")
+    var_layout.update(height=280, showlegend=False, yaxis_title="Pérdida Máxima (%)")
+    fig_var.update_layout(**var_layout)
+    st.plotly_chart(fig_var, use_container_width=True)
+
+# ─── Reporte de Análisis ──────────────────────────────────────────────────────
+st.markdown('<p class="section-header">📝 Reporte de Análisis Comparativo</p>',
+            unsafe_allow_html=True)
+
+st.markdown("""
+<div class="report-box">
+
+<p>
+Este reporte compara los perfiles de riesgo de tres activos distintos:
+<strong>GOOGL</strong> (acción tecnológica de gran capitalización),
+<strong>ADA-USD</strong> (criptomoneda de mediana capitalización) y
+<strong>NG=F</strong> (futuros de Gas Natural, materia prima con comportamiento de refugio parcial).
+El análisis se fundamenta en cuatro métricas cuantitativas calculadas sobre datos históricos reales.
+</p>
+
+<h4>🔵 GOOGL — Alphabet Inc. (Acción Tecnológica)</h4>
+<ul>
+  <li><strong>Volatilidad:</strong> Moderada (~25–35% anualizada). Como acción de mega-cap en el S&P 500,
+  GOOGL presenta volatilidad acotada comparada con activos especulativos.</li>
+  <li><strong>VaR 95%:</strong> Típicamente entre 2–4% diario, manejable dentro de un portafolio diversificado.</li>
+  <li><strong>Máximo Drawdown:</strong> Puede superar el −40% en correcciones tecnológicas (ej. 2022),
+  representando un riesgo de recuperación importante.</li>
+  <li><strong>Sharpe Ratio:</strong> Históricamente positivo (>1 en bull markets). El retorno compensa razonablemente el riesgo.</li>
+  <li><strong>Conclusión:</strong> <span class="tag tag-blue">Riesgo Moderado</span>
+  Adecuada para portafolios con horizonte largo y tolerancia media al riesgo.</li>
+</ul>
+
+<h4>🟣 ADA-USD — Cardano (Criptomoneda)</h4>
+<ul>
+  <li><strong>Volatilidad:</strong> Muy alta (>80–120% anualizada). Los swings extremos son amplificados
+  por baja liquidez relativa y sentimiento especulativo.</li>
+  <li><strong>VaR 95%:</strong> Frecuentemente supera el 8–12% diario — en 1 de cada 20 días
+  se puede perder más del 10% del capital.</li>
+  <li><strong>Máximo Drawdown:</strong> Histórico superior al −90% (máximos 2021 → mínimos 2022),
+  el más severo entre los tres activos.</li>
+  <li><strong>Sharpe Ratio:</strong> Altamente variable; negativo en ciclos bajistas.</li>
+  <li><strong>Conclusión:</strong> <span class="tag tag-red">Mayor Riesgo</span>
+  Solo apropiado para inversores con alta tolerancia al riesgo y asignación reducida del portafolio.</li>
+</ul>
+
+<h4>🟡 NG=F — Futuros de Gas Natural (Materia Prima)</h4>
+<ul>
+  <li><strong>Volatilidad:</strong> Alta y estacional (50–80% anualizada), impulsada por factores
+  climáticos, geopolíticos y de oferta/demanda energética.</li>
+  <li><strong>VaR 95%:</strong> Entre 4–8% diario. Los movimientos intradía pueden ser drásticos
+  por eventos exógenos (clima, inventarios EIA, conflictos).</li>
+  <li><strong>Máximo Drawdown:</strong> Caídas del −70% no son infrecuentes en ciclos de sobreoferta (ej. 2023–2024).</li>
+  <li><strong>Sharpe Ratio:</strong> Generalmente bajo o negativo, aunque su baja correlación con renta
+  variable lo hace valioso como cobertura táctica.</li>
+  <li><strong>Conclusión:</strong> <span class="tag tag-green">Riesgo Alto / Diversificador</span>
+  Perfil de riesgo elevado con poca compensación por retorno, útil como hedge táctico.</li>
+</ul>
+
+<h4>⚖️ Ranking de Riesgo (Mayor a Menor)</h4>
+<ol>
+  <li><strong>ADA-USD</strong> — Riesgo más alto en todas las métricas: volatilidad extrema,
+  VaR máximo, drawdowns devastadores y Sharpe inconsistente.</li>
+  <li><strong>NG=F</strong> — Alta volatilidad estructural con picos estacionales y bajo Sharpe sistemático.</li>
+  <li><strong>GOOGL</strong> — Menor riesgo relativo: volatilidad manejable, Sharpe positivo sostenido
+  y respaldo fundamental sólido.</li>
+</ol>
+
+<p style="margin-top:16px; color:#7a7984; font-size:13px;">
+⚠️ <em>Este análisis tiene fines educativos. No constituye asesoría financiera.
+Los rendimientos pasados no garantizan resultados futuros.</em>
+</p>
+
+</div>
+""", unsafe_allow_html=True)
+
+# ─── Footer ───────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.markdown(
+    f"<small style='color:#4a4a52'>Datos descargados: "
+    f"{prices.index[0].date()} → {prices.index[-1].date()} &nbsp;·&nbsp; "
+    f"{len(prices):,} observaciones &nbsp;·&nbsp; "
+    f"Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M')}</small>",
+    unsafe_allow_html=True
+)
